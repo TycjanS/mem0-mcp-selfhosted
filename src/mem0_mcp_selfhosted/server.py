@@ -235,13 +235,15 @@ def _register_tools(mcp: FastMCP) -> None:
         """Semantic search across existing memories."""
         uid = user_id or get_default_user_id()
 
-        kwargs: dict[str, Any] = {"user_id": uid, "query": query}
+        # mem0ai 2.0: entity scope ids (user_id/agent_id/run_id) must go inside
+        # the filters dict; top-level entity kwargs are rejected by search().
+        scope_filters: dict[str, Any] = dict(filters) if filters else {}
+        scope_filters["user_id"] = uid
         if agent_id:
-            kwargs["agent_id"] = agent_id
+            scope_filters["agent_id"] = agent_id
         if run_id:
-            kwargs["run_id"] = run_id
-        if filters:
-            kwargs["filters"] = filters
+            scope_filters["run_id"] = run_id
+        kwargs: dict[str, Any] = {"query": query, "filters": scope_filters}
         if limit is not None:
             kwargs["limit"] = limit
         if threshold is not None:
@@ -266,11 +268,14 @@ def _register_tools(mcp: FastMCP) -> None:
         """Page through memories using filters instead of search."""
         uid = user_id or get_default_user_id()
 
-        kwargs: dict[str, Any] = {"user_id": uid}
+        # mem0ai 2.0: entity scope ids (user_id/agent_id/run_id) must go inside
+        # the filters dict; top-level entity kwargs are rejected by get_all().
+        scope_filters: dict[str, Any] = {"user_id": uid}
         if agent_id:
-            kwargs["agent_id"] = agent_id
+            scope_filters["agent_id"] = agent_id
         if run_id:
-            kwargs["run_id"] = run_id
+            scope_filters["run_id"] = run_id
+        kwargs: dict[str, Any] = {"filters": scope_filters}
         if limit is not None:
             kwargs["limit"] = limit
 
