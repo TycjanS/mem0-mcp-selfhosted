@@ -105,7 +105,6 @@ def _ensure_memory() -> Any:
 
     Returns the Memory instance, or None if initialization failed.
     After a failure, waits ``_INIT_RETRY_COOLDOWN`` seconds before retrying.
-    Matches the lazy-init pattern used by ``graph_tools._get_driver()``.
     """
     global memory, _last_init_failure
 
