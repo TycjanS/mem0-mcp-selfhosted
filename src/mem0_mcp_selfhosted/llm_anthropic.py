@@ -343,17 +343,35 @@ class AnthropicOATLLM(LLMBase):
         """Check if the configured model supports structured outputs."""
         return self.config.model.startswith(_STRUCTURED_OUTPUT_PREFIXES)
 
-    def _select_schema(self, messages: list[dict]) -> dict:
-        """Select structured output schema based on call type.
+    def _select_schema(self, messages: list[dict]) -> dict | None:
+        """Select structured output schema based on the prompt actually in play.
 
-        Detection: fact extraction calls always have a system message
-        (the prompt template); memory update calls have only a user message.
-        This is an intentional architectural invariant in mem0ai.
+        mem0ai's extraction prompt changed shape across major versions, so the
+        old "has a system message => fact extraction" heuristic is no longer
+        sufficient — it forced the {"facts": [...]} schema onto mem0ai 2.x's
+        single-pass "Memory Extractor" prompt, which emits {"memory": [...]}.
+        The model was then locked into the wrong key and every extraction was
+        silently dropped (add_memory returned {"results": []}).
+
+        Detection is now content-aware:
+        - No system message            -> memory-update call -> MEMORY_UPDATE_SCHEMA
+        - Legacy 1.x fact extraction   -> "Personal Information Organizer"
+                                          -> FACT_RETRIEVAL_SCHEMA
+        - mem0ai 2.x "Memory Extractor" / anything unknown -> return None:
+          do NOT force a schema. The prompt already demands strict JSON, and
+          generate_response() falls back to extract_json(), so the model is
+          free to honour whatever output contract its own prompt specifies.
         """
-        has_system = any(m.get("role") == "system" for m in messages)
-        if has_system:
+        system_text = " ".join(
+            m.get("content", "") for m in messages if m.get("role") == "system"
+        )
+        if not system_text:
+            return MEMORY_UPDATE_SCHEMA
+        if "Personal Information Organizer" in system_text:
             return FACT_RETRIEVAL_SCHEMA
-        return MEMORY_UPDATE_SCHEMA
+        # Unknown / 2.x extraction prompt: rely on the prompt + extract_json
+        # fallback instead of imposing a schema we can't guarantee matches.
+        return None
 
     @staticmethod
     def _parse_response(response: anthropic.types.Message) -> dict:
@@ -446,15 +464,24 @@ class AnthropicOATLLM(LLMBase):
 
         # Path 1: Structured output (response_format, no tools)
         if response_format:
-            if self._supports_structured_output():
-                schema = self._select_schema(messages)
+            # Only force a schema when the model supports structured output AND
+            # we have one that matches the prompt in play. _select_schema()
+            # returns None for prompts we don't own a schema for (e.g. mem0ai
+            # 2.x "Memory Extractor") — in that case we skip output_config and
+            # let extract_json() parse whatever JSON the prompt asked for.
+            schema = (
+                self._select_schema(messages)
+                if self._supports_structured_output()
+                else None
+            )
+            if schema:
                 params["output_config"] = {
                     "format": {
                         "type": "json_schema",
                         "schema": schema,
                     },
                 }
-            # else: no output_config — rely on extractJson fallback
+            # else: no output_config — rely on extract_json fallback
 
             response = self._call_api(params)
             if not response.content:

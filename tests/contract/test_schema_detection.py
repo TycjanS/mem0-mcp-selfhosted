@@ -3,6 +3,14 @@
 Validates that mem0ai's fact extraction messages contain a system message
 and memory update messages do not. This is a structural invariant in
 mem0ai's architecture — if it breaks, our schema detection fails.
+
+NOTE (mem0ai 2.x): the presence of a system message is NECESSARY but no longer
+SUFFICIENT to identify the legacy fact-extraction call. mem0ai 2.x replaced the
+"Personal Information Organizer" prompt (which emitted {"facts": [...]}) with a
+single-pass "Memory Extractor" prompt that ALSO carries a system message but
+emits {"memory": [...]}. Selecting FACT_RETRIEVAL_SCHEMA purely on has_system
+forced the wrong key and silently dropped every extraction. _select_schema()
+is therefore content-aware; see TestV2PromptShift below.
 """
 
 from __future__ import annotations
@@ -91,3 +99,44 @@ class TestSchemaDetectionWithRealPrompts:
 
         system_count = sum(1 for m in messages if m.get("role") == "system")
         assert system_count == 0
+
+
+class TestV2PromptShift:
+    """Document why has_system alone is insufficient under mem0ai 2.x.
+
+    Both the legacy 1.x fact-extraction prompt and the 2.x 'Memory Extractor'
+    prompt carry a system message, so has_system cannot tell them apart — yet
+    they require different output schemas. This is the regression that made
+    add_memory return {"results": []} while every external dependency (Ollama,
+    Qdrant, Anthropic) responded 200 OK.
+    """
+
+    def test_v2_memory_extractor_also_has_system_message(self):
+        """The 2.x extraction prompt has a system message too — has_system ties."""
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "# ROLE\n\nYou are a Memory Extractor — a precise, "
+                    "evidence-bound processor responsible for extracting rich, "
+                    "contextual memories from conversations.\n\n"
+                    '# OUTPUT FORMAT\n\nReturn ONLY valid JSON: {"memory": [...]}'
+                ),
+            },
+            {"role": "user", "content": "## New Messages\nuser: Alice prefers TypeScript"},
+        ]
+
+        has_system = any(m.get("role") == "system" for m in messages)
+        assert has_system, (
+            "The 2.x 'Memory Extractor' prompt carries a system message just "
+            "like the 1.x prompt — proving has_system cannot distinguish them."
+        )
+
+    def test_v2_prompt_requests_memory_not_facts(self):
+        """The 2.x prompt's output contract is {"memory": [...]}, not {"facts": [...]}."""
+        v2_system_prompt = (
+            "You are a Memory Extractor ... "
+            '# OUTPUT FORMAT\n\nReturn ONLY valid JSON: {"memory": [...]}'
+        )
+        assert '"memory"' in v2_system_prompt
+        assert '"facts"' not in v2_system_prompt

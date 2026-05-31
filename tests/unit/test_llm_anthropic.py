@@ -104,11 +104,17 @@ class TestParseResponse:
 
 
 class TestSchemaDetection:
-    def test_fact_extraction_has_system_message(self):
-        """System message present → FACT_RETRIEVAL_SCHEMA."""
+    def test_legacy_fact_extraction_prompt(self):
+        """mem0ai 1.x 'Personal Information Organizer' → FACT_RETRIEVAL_SCHEMA."""
         llm = MagicMock(spec=AnthropicOATLLM)
         messages = [
-            {"role": "system", "content": "Extract facts from the following..."},
+            {
+                "role": "system",
+                "content": (
+                    "You are a Personal Information Organizer, specialized in "
+                    "accurately storing facts, user memories, and preferences."
+                ),
+            },
             {"role": "user", "content": "Alice prefers TypeScript"},
         ]
         result = AnthropicOATLLM._select_schema(llm, messages)
@@ -122,6 +128,39 @@ class TestSchemaDetection:
         ]
         result = AnthropicOATLLM._select_schema(llm, messages)
         assert result == MEMORY_UPDATE_SCHEMA
+
+    def test_v2_memory_extractor_prompt_returns_none(self):
+        """mem0ai 2.x 'Memory Extractor' emits {"memory": [...]}, not {"facts": [...]}.
+
+        Forcing FACT_RETRIEVAL_SCHEMA here is exactly the regression that made
+        add_memory silently drop every extraction. We must NOT impose a schema
+        we don't own — return None so generate_response() falls back to
+        extract_json() and honours the prompt's own output contract.
+        """
+        llm = MagicMock(spec=AnthropicOATLLM)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "# ROLE\n\nYou are a Memory Extractor — a precise, "
+                    "evidence-bound processor responsible for extracting rich, "
+                    "contextual memories from conversations."
+                ),
+            },
+            {"role": "user", "content": "## New Messages\nuser: Alice prefers TypeScript"},
+        ]
+        result = AnthropicOATLLM._select_schema(llm, messages)
+        assert result is None
+
+    def test_unknown_system_prompt_returns_none(self):
+        """Any unrecognised system prompt → None (don't guess a schema)."""
+        llm = MagicMock(spec=AnthropicOATLLM)
+        messages = [
+            {"role": "system", "content": "Some future prompt we have never seen."},
+            {"role": "user", "content": "..."},
+        ]
+        result = AnthropicOATLLM._select_schema(llm, messages)
+        assert result is None
 
 
 # --- Helpers for token refresh tests ---
